@@ -1,19 +1,17 @@
+local inspect = require('lib.inspect')
 if not os.execute("clear") then
     os.execute("cls")
 end
---------------------------------------------------
-
+----asd----------------------------------------------
+asd
 
 -- Splits player data into teams
 local function getTeam(i_players, teamName, maxPlayers)
     maxPlayers = maxPlayers or math.huge
     local team = {}
-    local commander = teamName  ~= "none"
-    for _, v in ipairs(i_players) do
-        if (v.pref == teamName and maxPlayers > #team) then
-            v.commander = commander
-            commander = false
-            table.insert(team, v)
+    for i = 1, #i_players do
+        if (i_players[i].pref == teamName and maxPlayers > #team) then
+            table.insert(team, i_players[i])
         end
     end
     return team
@@ -22,10 +20,16 @@ end
 -- computes the mean value of team members skills
 local function mean(i_players, t_team)
     local sum = 0
-    for _, v in ipairs(i_players) do
-        sum = sum + v[t_team]
+    local count = #i_players
+    for i = 1, count do
+        sum = sum + i_players[i][t_team]
     end
-    return sum / #i_players
+
+    if count then
+        return sum / count
+    else
+        return 0
+    end
 end
 
 -- computes the variance of team members skills, using a previously computed mean(average) m
@@ -33,14 +37,18 @@ end
 -- function taken from https://github.com/Bytebit-Org/lua-statistics/blob/master/src/statistics.lua#L119
 local function variance(i_players, t_team, m_teamMean)
     local varianceSum = 0
-    for _, v in ipairs(i_players) do
-        local difference = v[t_team] - m_teamMean
+    local count = #i_players
+    for i = 1, count do
+        local difference = i_players[i][t_team] - m_teamMean
         varianceSum = varianceSum + (difference * difference)
     end
     -- this test is costly here (because nested in loops ultimately)
     -- could be removed by avoiding shuffling when too few players are present
-
-    return varianceSum / (#i_players - 1) -- usual definition of variance (usual bias)
+    if 0 < count - 1 then
+        return varianceSum / (count - 1) -- usual definition of variance (usual bias)
+    else
+        return 0
+    end
 end
 
 -- computes the skewness of team members skills, using a previously computed mean and variance.
@@ -48,15 +56,19 @@ end
 -- Avoid useless computations (mostly redundant divisions) by using the expanded formula
 local function skewness(i_players, t_team, m_teamAverage, v_teamVariance)
     local cube = 0
-    for _, v in ipairs(i_players) do
-        cube = cube + (v[t_team] * v[t_team] * v[t_team])
+    local count = #i_players
+    for i = 1, count do
+        cube = cube + (i_players[i][t_team] * i_players[i][t_team] * i_players[i][t_team])
     end
     -- if non-positive, then we don't have enough data / players
     -- this test is costly here (because nested in loops ultimately)
     -- could be removed by avoiding shuffling when too few players are present
-
-    cube = cube / #i_players
-    return (cube - 3 * m_teamAverage * v_teamVariance - m_teamAverage * m_teamAverage * m_teamAverage) / (math.sqrt(v_teamVariance) * v_teamVariance)
+    if 0 < count and 0 < v_teamVariance then
+        cube = cube / count
+        return (cube - 3 * m_teamAverage * v_teamVariance - m_teamAverage * m_teamAverage * m_teamAverage) / (math.sqrt(v_teamVariance) * v_teamVariance)
+    else
+        return 0
+    end
 end
 
 -- computes a kind of relative gap between two values.
@@ -67,9 +79,8 @@ end
 -- I made it up to be able to 0compare moves later, check this choice on wolfram alpha for instance to get an
 -- idea of how it works. In the case of the denominator being too small (< 10 −12 for instance); just
 -- return 0 because it means that both values are really low and negligible for our purposes.
-local abs = math.abs
 local function relative(x, y)
-
+    local abs = math.abs
     local denominator = abs(x) + abs(y) + abs(x + y)
     -- really 1e-12 should be small enough given test data skewness, we simply want to avoid dividing by zero
     -- we also want "continuity" in zero of this function for x=y
@@ -81,6 +92,7 @@ local function relative(x, y)
         return 0
     end
 end
+
 -- computes a coefficient that gets higher the more the teams are unbalanced.
 -- The more the skill distributions are similar in terms of mean, variance, skewness (not necessarily normal
 -- distribution, simply alike), the lower the coefficient gets.
@@ -100,29 +112,13 @@ local function asymmetry(t1, t2)
     return relative(m1, m2) + relative(v1, v2) + relative(s1, s2)
 end
 
-local function asymmetryCompare(oldAsymmetry, t1, t2)
-    local m1 = mean(t1, "marine")
-    local m2 = mean(t2, "alien")
-    local r1 = relative(m1, m2)
-    if r1 > oldAsymmetry then
-      return r1
-    end
-    local v1 = variance(t1, "marine", m1)
-    local v2 = variance(t2, "alien", m2)
-    local r2 = relative(v1, v2)
-    if r1 + r2 > oldAsymmetry then
-      return r1 + r2
-    end
-    local s1 = skewness(t1, "marine", m1, v1)
-    local s2 = skewness(t2, "alien", m2, v2)
-    return r1 + r2 + relative(s1, s2)
-end
 
 -- little helper to swap players
 local function swapPlayers(t1, t2, i, j)
     local tmp = t1[i] -- only one temporary variable should work from my understanding of lua references/copy
     t1[i] = t2[j]
     t2[j] = tmp
+    return t1, t2
 end
 
 -- It must basically keep swapping players between teams until no better swap is found.
@@ -147,23 +143,21 @@ local function swap(t1, t2)
         for i = 1, count1 do
             -- loop over team 1 players
             for j = 1, count2 do
-                if (t1[i].commander == false and t2[j].commander == false) then
-                  -- loop over team 2 players
-                  -- swap players i and j of teams 1 and teams 2 respectively
-                  -- something like t1[i], t2[j] = t2[j], t1[i]
-                  swapPlayers(t1, t2, i, j)
-                  -- recompute asymmetry of the teams with the swapped players to see if it’s lower
-                  local cur_asym = asymmetryCompare(new_asym, t1, t2)
-                  if cur_asym < new_asym then
-                      -- if we found a lower asym we save the swap to make to get it
-                      new_asym = cur_asym -- we save the better asym to get only the best move
-                      i_index = i
-                      j_index = j
-                  end
-                  -- restore the teams to their original state to try other moves
-                  -- something like t1[i], t2[j] = t2[j], t1[i]
-                  swapPlayers(t1, t2, i, j)
+                -- loop over team 2 players
+                -- swap players i and j of teams 1 and teams 2 respectively
+                -- something like t1[i], t2[j] = t2[j], t1[i]
+                t1, t2 = swapPlayers(t1, t2, i, j)
+                -- recompute asymmetry of the teams with the swapped players to see if it’s lower
+                local cur_asym = asymmetry(t1, t2)
+                if cur_asym < new_asym then
+                    -- if we found a lower asym we save the swap to make to get it
+                    new_asym = cur_asym -- we save the better asym to get only the best move
+                    i_index = i
+                    j_index = j
                 end
+                -- restore the teams to their original state to try other moves
+                -- something like t1[i], t2[j] = t2[j], t1[i]
+                t1, t2 = swapPlayers(t1, t2, i, j)
             end
         end
         -- i think you moved indexes declaration out of the loop so it must now become:
@@ -171,13 +165,13 @@ local function swap(t1, t2)
         if new_asym < old_asym then
             -- we know there is a better move not thanks to indexes but lower asym
             -- swap (i_index player on team 1 with j_index player on team 2) something like t1[i_index], t2[j_index] = t2[j_index], t1[i_index]
-            swapPlayers(t1, t2, i_index, j_index)
+            t1, t2 = swapPlayers(t1, t2, i_index, j_index)
         else
             break -- to avoid double testing the same (new_asym < old_asym) in "while (...) do"
         end
     end
+    return t1, t2 -- the updated teams
 end
-
 local function swapPairs(t1, t2)
     local old_asym = 3 -- impossible worst initial value to enter loop once at least
     local new_asym = asymmetry(t1, t2) -- current value, before any swap
@@ -193,47 +187,40 @@ local function swapPairs(t1, t2)
     while (new_asym < old_asym) do
         -- while we find a move to improve balance
         old_asym = new_asym
-        for i = 1, math.ceil(count1/2) do
+        for i = 1, count1 do
             -- loop over team 1 players
-            for j = 1, math.ceil(count2/2) do
-              
-                if (t1[i].commander == false and t2[j].commander == false) then
-                  -- loop over team 2 players
-                  -- swap players i and j of teams 1 and teams 2 respectively
-                  -- something like t1[i], t2[j] = t2[j], t1[i]
-                  swapPlayers(t1, t2, i, j)
-                  for k = math.floor(count1/2), count1 do
-                      if (k ~= i) then
-                        -- loop over team 1 players
-                        for l = math.floor(count2/2), count2 do
-                            if (l ~= j) then
-                              if (t1[k].commander == false and t2[l].commander == false) then
-                                -- loop over team 2 players
-                                -- swap players i and j of teams 1 and teams 2 respectively
-                                -- something like t1[i], t2[j] = t2[j], t1[i]
-                                swapPlayers(t1, t2, k, l)
-                                -- recompute asymmetry of the teams with the swapped players to see if it’s lower
-                                local cur_asym = asymmetryCompare(new_asym, t1, t2)
-                                if cur_asym < new_asym then
-                                    -- if we found a lower asym we save the swap to make to get it
-                                    new_asym = cur_asym -- we save the better asym to get only the best move
-                                    i_index = i
-                                    j_index = j
-                                    k_index = k
-                                    l_index = l
-                                end
-                                -- restore the teams to their original state to try other moves
-                                -- something like t1[i], t2[j] = t2[j], t1[i]
-                                swapPlayers(t1, t2, k, l)
-                              end
-                            end
+            for j = 1, count2 do
+                -- loop over team 2 players
+                -- swap players i and j of teams 1 and teams 2 respectively
+                -- something like t1[i], t2[j] = t2[j], t1[i]
+                t1, t2 = swapPlayers(t1, t2, i, j)
+                for k = 1, count1 do
+                    -- loop over team 1 players
+                    for l = 1, count2 do
+                        if (k ~= i and l ~= j) then
+                          -- loop over team 2 players
+                          -- swap players i and j of teams 1 and teams 2 respectively
+                          -- something like t1[i], t2[j] = t2[j], t1[i]
+                          t1, t2 = swapPlayers(t1, t2, k, l)
+                          -- recompute asymmetry of the teams with the swapped players to see if it’s lower
+                          local cur_asym = asymmetry(t1, t2)
+                          if cur_asym < new_asym then
+                              -- if we found a lower asym we save the swap to make to get it
+                              new_asym = cur_asym -- we save the better asym to get only the best move
+                              i_index = i
+                              j_index = j
+                              k_index = k
+                              l_index = l
+                          end
+                          -- restore the teams to their original state to try other moves
+                          -- something like t1[i], t2[j] = t2[j], t1[i]
+                          t1, t2 = swapPlayers(t1, t2, k, l)
                         end
-                      end
-                  end
-                  -- restore the teams to their original state to try other moves
-                  -- something like t1[i], t2[j] = t2[j], t1[i]
-                  swapPlayers(t1, t2, i, j)
+                    end
                 end
+                -- restore the teams to their original state to try other moves
+                -- something like t1[i], t2[j] = t2[j], t1[i]
+                t1, t2 = swapPlayers(t1, t2, i, j)
             end
         end
         -- i think you moved indexes declaration out of the loop so it must now become:
@@ -241,12 +228,13 @@ local function swapPairs(t1, t2)
         if new_asym < old_asym then
             -- we know there is a better move not thanks to indexes but lower asym
             -- swap (i_index player on team 1 with j_index player on team 2) something like t1[i_index], t2[j_index] = t2[j_index], t1[i_index]
-            swapPlayers(t1, t2, i_index, j_index)
-            swapPlayers(t1, t2, k_index, l_index)
+            t1, t2 = swapPlayers(t1, t2, i_index, j_index)
+            t1, t2 = swapPlayers(t1, t2, k_index, l_index)
         else
             break -- to avoid double testing the same (new_asym < old_asym) in "while (...) do"
         end
     end
+    return t1, t2 -- the updated teams
 end
 local function pick_loop(t0, t1, t2, n)
     -- we need n to get the right team skill but makes code look horrible
@@ -266,7 +254,7 @@ local function pick_loop(t0, t1, t2, n)
             -- add the k-th player to team 2
             table.insert(t2, t0[k])
         end
-        local cur_asym = asymmetryCompare(old_asym, t1, t2) -- recompute asymmetry with the new teams
+        local cur_asym = asymmetry(t1, t2) -- recompute asymmetry with the new teams
         if cur_asym < old_asym then
             -- if we found a better pick to balance out
             index = k -- we save the index of the player to add
@@ -293,6 +281,8 @@ local function pick_loop(t0, t1, t2, n)
 
     -- remove t0[index] player from t0 table
     table.remove(t0, index)
+    -- return teams in the right order
+    return t0, t1, t2
 end
 
 -- takes non-afk ready room players and fills up the teams if these are not full already. Loop over available
@@ -309,14 +299,15 @@ local function pick(t0, t1, t2, maxPlayersTeam)
         -- which team has less players?
         if #t1 < #t2 then
             -- adding to team 1
-            pick_loop(t0, t1, t2, 1)
+            t0, t1, t2 = pick_loop(t0, t1, t2, 1)
         else
             -- adding to team2 also default
             -- could be improved by adding to the team that balances it out better
             -- would need an entirely new function as a default case
-            pick_loop(t0, t1, t2, 2)
+            t0, t1, t2 = pick_loop(t0, t1, t2, 2)
         end
     end
+    return t1, t2
 end
 
 -- a common function that switches player from larger team to smaller one
@@ -330,19 +321,19 @@ local function switch_loop(t1, t2, n, old_asym)
         local count2 = #t2
         for j = 1, count2 do
             --looping over team 2
-            if (t2[j].commander == false) then
-              table.insert(t1, t2[j]) -- adding t2[j] to t1
-              table.remove(t2, j)
-              local cur_asym = asymmetryCompare(new_asym, t1, t2) -- compute new asymmetry
-              if cur_asym < new_asym then
-                  -- is it better?
-                  new_asym = cur_asym -- save the new lowest asym
-                  index = j -- save the best player to switch index
-              end
-              -- restore teams as they were to try new switches
-              table.insert(t2, j, t1[#t1])
-              table.remove(t1)
+
+            table.insert(t1, t2[j]) -- adding t2[j] to t1
+            table.remove(t2, j)
+            local cur_asym = asymmetry(t1, t2) -- compute new asymmetry
+            if cur_asym < new_asym then
+                -- is it better?
+                new_asym = cur_asym -- save the new lowest asym
+                index = j -- save the best player to switch index
             end
+            -- restore teams as they were to try new switches
+            table.insert(t2, j, t1[#t1])
+            table.remove(t1)
+
         end
         if 0 < index then
             -- we found a switch to make so apply it
@@ -354,20 +345,18 @@ local function switch_loop(t1, t2, n, old_asym)
         local count1 = #t1
         for i = 1, count1 do
             --looping over team 1
-            if (t1[i].commander == false) then
-              table.insert(t2, t1[i]) -- adding t2[j] to t1
-              table.remove(t1, i)
+            table.insert(t2, t1[i]) -- adding t2[j] to t1
+            table.remove(t1, i)
 
-              local cur_asym = asymmetryCompare(new_asym, t1, t2) -- compute new asymmetry
-              if cur_asym < new_asym then
-                  -- is it better?
-                  new_asym = cur_asym -- save the new lowest asym
-                  index = i -- save the best player to switch index
-              end
-              -- restore teams as they were to try new switches
-              table.insert(t1, i, t2[#t2])
-              table.remove(t2)
-          end
+            local cur_asym = asymmetry(t1, t2) -- compute new asymmetry
+            if cur_asym < new_asym then
+                -- is it better?
+                new_asym = cur_asym -- save the new lowest asym
+                index = i -- save the best player to switch index
+            end
+            -- restore teams as they were to try new switches
+            table.insert(t1, i, t2[#t2])
+            table.remove(t2)
         end
         if 0 < index then
             -- we found a switch to make so apply it
@@ -375,7 +364,7 @@ local function switch_loop(t1, t2, n, old_asym)
             table.remove(t1, index) -- remove t1[index] player from team1
         end
     end
-    return new_asym
+    return t1, t2, new_asym
 end
 
 -- a function to switch players while caring for a lower asymmetry
@@ -387,13 +376,12 @@ local function switch(t1, t2)
         old_asym = new_asym -- update to break off if needed
         if #t1 < #t2 then
             -- which team has less players
-            new_asym = switch_loop(t1, t2, 1, old_asym) -- adding to team 1 from team 2, if we can also lower asymmetry
-
+            t1, t2, new_asym = switch_loop(t1, t2, 1, old_asym) -- adding to team 1 from team 2, if we can also lower asymmetry
         else
-           new_asym = switch_loop(t1, t2, 2, old_asym) -- adding to team 2 from team 1, if we can also lower asymmetry
-
+            t1, t2, new_asym = switch_loop(t1, t2, 2, old_asym) -- adding to team 2 from team 1, if we can also lower asymmetry
         end
     end
+    return t1, t2
 end
 
 -- here we balance the number of players even if we get a worse (an higher) asymmetry because it's more important
@@ -404,11 +392,12 @@ local function move(t1, t2)
         -- the 3 variable is ignored, because switch_loop returns a useless new asymmetry in this case
         if #t1 < #t2 then
             -- if team2 has more players than team1
-            switch_loop(t1, t2, 1, 3) -- add to team 1 from team 2 with initial asym very high because we don't care yet
+            t1, t2, _ = switch_loop(t1, t2, 1, 3) -- add to team 1 from team 2 with initial asym very high because we don't care yet
         else
-            switch_loop(t1, t2, 2, 3) -- add to team 2 from team 1 with initial asym very high because we don't care yet
+            t1, t2, _ = switch_loop(t1, t2, 2, 3) -- add to team 2 from team 1 with initial asym very high because we don't care yet
         end
     end
+    return t1, t2
 end
 
 -- helper function to show informations about the teams created
@@ -449,19 +438,11 @@ local function showTeams(t0, t1, t2)
     for i = 1, max do
         local marineString = lpad('', 20)
         if t1[i] ~= nil then
-            local star = ' '
-            if t1[i].commander then
-              star = '*'
-            end
-            marineString = lpad(t1[i].id, 3) .. star .. lpad(t1[i].name, 12) .. lpad(t1[i].marine, 5)
+            marineString = lpad(t1[i].id, 3) .. lpad(t1[i].name, 12) .. lpad(t1[i].marine, 5)
         end
         local alienString = ''
         if t2[i] ~= nil then
-            local star = ' '
-            if t2[i].commander then
-              star = '*'
-            end
-            alienString = " " .. lpad(t2[i].id, 3) .. star.. lpad(t2[i].name, 12) .. lpad(t2[i].alien, 5)
+            alienString = " " .. lpad(t2[i].id, 3) .. lpad(t2[i].name, 12) .. lpad(t2[i].alien, 5)
         end
         local noneString = ''
         if t0[i] ~= nil then
@@ -469,18 +450,18 @@ local function showTeams(t0, t1, t2)
         end
         print(lpad(i, 2) .. marineString .. alienString .. noneString)
     end
-    print(lpad('Marines ' .. #t1, 23) .. lpad('Aliens ' .. #t2, 22) .. lpad('None ' .. #t0, 21))
+    print(lpad('Marines ' .. #t1, 22) .. lpad('Aliens ' .. #t2, 21) .. lpad('None ' .. #t0, 21))
 end
 
 local function main(t0, t1, t2, maxPlayersTeam)
-    pick(t0, t1, t2, maxPlayersTeam)
+    t1, t2 = pick(t0, t1, t2, maxPlayersTeam)
 
     if #t1 == #t2 then
-        swapPairs(t1, t2)
-        swap(t1, t2) -- we swap to balance, #t1 == #t2 remains true
+        t1, t2 = swap(t1, t2) -- we swap to balance, #t1 == #t2 remains true
+        t1, t2 = swapPairs(t1, t2)
     else
-        move(t1, t2) -- balances number of players between teams until |#t1 - #t2| == 1 is true
-        switch(t1, t2) -- may change #t1 and #t2, but |#t1 - #t2| == 1 remains true
+        t1, t2 = move(t1, t2) -- balances number of players between teams until |#t1 - #t2| == 1 is true
+        t1, t2 = switch(t1, t2) -- may change #t1 and #t2, but |#t1 - #t2| == 1 remains true
     end
 
     -- apply changes:
@@ -500,8 +481,6 @@ local i_players = sampledata.s48 -- 10 marines, 20 aliens, 18 rr
 --local i_players = sampledata.s9 -- 5 marines, 4 aliens,
 --local i_players = sampledata.s43 -- 22 marines, 21 aliens,
 --local i_players = sampledata.s23 -- 12 marines, 11 aliens,
---local i_players = sampledata.s44_allsame -- all 5000 skill
---local i_players = sampledata.s43_allsame -- all 5000 skill
 
 local maxPlayers = 44
 local playerCount = #i_players
@@ -520,10 +499,8 @@ local teamNone = getTeam(i_players, "none")
 
 showTeams(teamNone, teamMarine, teamAlien)
 
-local start_time = os.clock()
 local t1, t2 = main(teamNone, teamMarine, teamAlien, maxPlayersTeam)
-local end_time = os.clock()
+
 
 -- TODO Still need NOT to switch commanders, so implement tests not to move them
 showTeams(teamNone, t1, t2)
-print("time spent: " .. (end_time - start_time) .. "sec")
